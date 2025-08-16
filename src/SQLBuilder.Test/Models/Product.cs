@@ -1,0 +1,23 @@
+﻿using SQLQueryBuilder.Flags;
+
+namespace SQLBuilder.Test.Models
+{
+    [SQBTable("Products")]
+    public class Product
+
+    {
+        public int Id { get; set; }
+
+        public DateTime CreatedOn { get; set; }
+        public int? CreatedBy { get; set; }
+        public DateTime? UpdatedOn { get; set; }
+        public int? UpdatedBy { get; set; }
+        public bool IsActive { get; set; } = true;
+        public bool IsDeleted { get; set; } = false;
+
+        public decimal Price { get; set; }
+        public int StockCount { get; set; }
+        [SQBForeignKey<Category>]
+        public int CategoryId { get; set; }
+    }
+}
