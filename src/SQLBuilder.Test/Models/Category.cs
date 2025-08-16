@@ -5,6 +5,7 @@ namespace SQLBuilder.Test.Models
     [SQBTable("Categories")]
     public class Category
     {
+        [SQBPrimaryKey]
         public int Id { get; set; }
 
         public DateTime CreatedOn { get; set; }
@@ -16,5 +17,8 @@ namespace SQLBuilder.Test.Models
 
         public string Name { get; set; }
         public string? Description { get; set; }
+
+        [SQBForeignKey<Category>]
+        public int ParentCategoryId { get; set; }
     }
 }

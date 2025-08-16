@@ -6,6 +6,7 @@ namespace SQLBuilder.Test.Models
     public class Product
 
     {
+        [SQBPrimaryKey]
         public int Id { get; set; }
 
         public DateTime CreatedOn { get; set; }
@@ -15,6 +16,7 @@ namespace SQLBuilder.Test.Models
         public bool IsActive { get; set; } = true;
         public bool IsDeleted { get; set; } = false;
 
+        public string Name { get; set; }
         public decimal Price { get; set; }
         public int StockCount { get; set; }
         [SQBForeignKey<Category>]

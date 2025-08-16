@@ -35,7 +35,6 @@ namespace SQLQueryBuilder.Core
             }
             else if (expression is UnaryExpression unaryExpression && unaryExpression.NodeType == ExpressionType.Not)
             {
-                // `!x.IsActive` gibi ifadeleri `x.IsActive == false` olarak ele al
                 if (unaryExpression.Operand is MemberExpression memberForUnary)
                 {
                     conditions.Add(new SQBSqlWhere { ColumnName = memberForUnary.Member.Name, Operation = "=", Value = "0" });
@@ -43,7 +42,6 @@ namespace SQLQueryBuilder.Core
             }
             else if (expression is MemberExpression member)
             {
-                // `x.IsActive` gibi ifadeleri `x.IsActive == true` olarak ele al
                 conditions.Add(new SQBSqlWhere { ColumnName = member.Member.Name, Operation = "=", Value = "1" });
             }
             else
@@ -75,10 +73,9 @@ namespace SQLQueryBuilder.Core
             Expression valueSide = binaryExpression.Right;
             string op = GetSqlOperator(binaryExpression.NodeType);
 
-            // Değer (sabit, değişken) sol taraftaysa, ifadeleri değiştir ve operatörü ters çevir.
             if (CanBeEvaluatedAsValue(fieldSide))
             {
-                (fieldSide, valueSide) = (valueSide, fieldSide); // Değiştir
+                (fieldSide, valueSide) = (valueSide, fieldSide);
                 op = FlipOperator(op);
             }
 
@@ -97,6 +94,10 @@ namespace SQLQueryBuilder.Core
             {
                 sqlWhere.Value = $"'{sqlWhere.Value}'";
             }
+            else if (valueObject is bool boolValue)
+            {
+                sqlWhere.Value = boolValue ? "1" : "0";
+            }
 
             return sqlWhere;
         }
@@ -105,21 +106,32 @@ namespace SQLQueryBuilder.Core
         {
             if (expression is MemberExpression memberExp)
             {
-                // x.Name.Length durumunu yakala
                 if (memberExp.Member is PropertyInfo && memberExp.Member.Name == "Length" && memberExp.Expression is MemberExpression parentMember)
                 {
                     return (parentMember.Member.Name, "LEN({0})");
                 }
-                // x.Name gibi normal durum
                 return (memberExp.Member.Name, "{0}");
             }
             throw new NotSupportedException($"Unsupported expression for a database field: {expression}");
         }
 
+        /// <summary>
+        /// Bir ifadenin C# tarafında bir değere dönüştürülüp dönüştürülemeyeceğini güvenli bir şekilde kontrol eder.
+        /// Eğer ifade 'x' parametresine bağlıysa, bu bir veritabanı kolonudur.
+        /// </summary>
         private static bool CanBeEvaluatedAsValue(Expression expression)
         {
-            // Eğer ifadenin ağacında bir parametre (örn: 'x') yoksa, bu C# tarafında hesaplanabilir bir değerdir.
-            return !expression.ToString().Contains(((ParameterExpression)((dynamic)expression).Expression)?.Name + ".");
+            // Sabitler her zaman C# değeridir.
+            if (expression.NodeType == ExpressionType.Constant)
+            {
+                return true;
+            }
+
+            // İfade ağacını gezerek içinde 'x' gibi bir parametre var mı diye kontrol et.
+            // Varsa, bu bir kolon ifadesidir. Yoksa, C# tarafında hesaplanabilir bir değerdir.
+            var visitor = new ParameterVisitor();
+            visitor.Visit(expression);
+            return !visitor.ContainsParameter;
         }
 
         private static string FlipOperator(string op)
@@ -148,6 +160,20 @@ namespace SQLQueryBuilder.Core
                 ExpressionType.LessThanOrEqual => "<=",
                 _ => throw new NotSupportedException($"Unsupported operator: {type}"),
             };
+        }
+
+        /// <summary>
+        /// Bir ifade ağacında ParameterExpression olup olmadığını tespit etmek için kullanılan yardımcı sınıf.
+        /// </summary>
+        private class ParameterVisitor : ExpressionVisitor
+        {
+            public bool ContainsParameter { get; private set; }
+
+            protected override Expression VisitParameter(ParameterExpression node)
+            {
+                ContainsParameter = true;
+                return base.VisitParameter(node);
+            }
         }
     }
 }

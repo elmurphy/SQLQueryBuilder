@@ -15,6 +15,7 @@ namespace SQLQueryBuilder.Core
     {
         #region Private Methods
 
+        // Bu yardımcı metodun private olarak sınıf içinde olduğundan emin olun
         private static MemberExpression GetMemberExpression<T>(Expression<Func<T, object>> expression)
         {
             var body = expression.Body;
@@ -35,15 +36,7 @@ namespace SQLQueryBuilder.Core
 
         #region Select Additional Methods
 
-        /// <summary>
-        /// Includes a foreign key relationship in the SQL query.
-        /// </summary>
-        /// <typeparam name="T"></typeparam>
-        /// <typeparam name="V"></typeparam>
-        /// <param name="builder"></param>
-        /// <param name="foreignKeySelector">Select your foreign key here</param>
-        /// <returns></returns>
-        /// <exception cref="ArgumentException"></exception>
+        // Mevcut Include metodunuz (Referans olarak)
         public static SQLQueryBuilder<T> Include<T, V>(this SQLQueryBuilder<T> builder, Expression<Func<T, object>> foreignKeySelector)
             where T : class, new()
             where V : class, new()
@@ -51,7 +44,6 @@ namespace SQLQueryBuilder.Core
             Type type = typeof(T);
             SQBTableAttribute? tableAttribute = type.GetCustomAttribute<SQBTableAttribute>();
             var tableName = tableAttribute != null ? tableAttribute.TableName : type.Name;
-
 
             var body = foreignKeySelector.Body;
             if (body is UnaryExpression unaryExpression)
@@ -66,16 +58,6 @@ namespace SQLQueryBuilder.Core
                     var foreignKeyAttribute = propertyInfo.GetCustomAttribute<SQBForeignKeyAttribute<V>>();
                     if (foreignKeyAttribute != null)
                     {
-                        var tableFrom = string.Empty;
-                        if (builder.tableIndexes.Any())
-                        {
-                            tableFrom = builder.tableIndexes.Last();
-                        }
-                        else
-                        {
-                            tableFrom = tableName;
-                        }
-
                         builder.includes.Add(new SQBInclude
                         {
                             TableName = foreignKeyAttribute.ForeignKeyTableName,
@@ -99,29 +81,23 @@ namespace SQLQueryBuilder.Core
             return builder;
         }
 
-        /// <summary>
-        /// Includes a foreign key relationship in the SQL query, allowing for chaining with ThenInclude.
-        /// </summary>
-        /// <typeparam name="T"></typeparam>
-        /// <typeparam name="V"></typeparam>
-        /// <param name="builder"></param>
-        /// <param name="foreignKeySelector">Select your foreign key here</param>
-        /// <returns></returns>
-        /// <exception cref="InvalidOperationException"></exception>
-        /// <exception cref="ArgumentException"></exception>
-        public static SQLQueryBuilder<T> ThenInclude<T, V>(this SQLQueryBuilder<T> builder, Expression<Func<T, object>> foreignKeySelector)
-            where T : class, new()
-            where V : class, new()
+        // *** DÜZELTİLMİŞ VE DOĞRU ÇALIŞAN THENINCLUDE METODU ***
+        public static SQLQueryBuilder<T> ThenInclude<T, V, K>(this SQLQueryBuilder<T> builder, Expression<Func<V, object>> foreignKeySelector)
+            where T : class, new() // Ana sorgu tipi (Product)
+            where V : class, new() // Önceki Include'un tipi, YENİ JOIN'in başlangıç noktası (Category)
+            where K : class, new() // JOIN yapılacak yeni hedef tip (Parent Category)
         {
             if (!builder.includes.Any())
             {
                 throw new InvalidOperationException("ThenInclude must be called after an Include method.");
             }
 
-            Type fromType = typeof(T);
+            // HATA BURADAYDI: Type fromType = typeof(T) yerine typeof(V) olmalı.
+            Type fromType = typeof(V);
             SQBTableAttribute? fromTableAttribute = fromType.GetCustomAttribute<SQBTableAttribute>();
             var fromTableName = fromTableAttribute != null ? fromTableAttribute.TableName : fromType.Name;
 
+            // GetMemberExpression'a foreignKeySelector'ı doğrudan geçiyoruz.
             var memberExpression = GetMemberExpression(foreignKeySelector);
             var propertyName = memberExpression.Member.Name;
 
@@ -130,21 +106,27 @@ namespace SQLQueryBuilder.Core
                 throw new ArgumentException("The selected member must be a property.", nameof(foreignKeySelector));
             }
 
-            var foreignKeyAttribute = propertyInfo.GetCustomAttribute<SQBForeignKeyAttribute<V>>();
+            // HATA BURADAYDI: foreignKeyAttribute'ü <V> yerine <K> ile aramalıyız.
+            var foreignKeyAttribute = propertyInfo.GetCustomAttribute<SQBForeignKeyAttribute<K>>();
             if (foreignKeyAttribute == null)
             {
-                throw new InvalidOperationException($"The property {propertyName} does not have an SQBForeignKeyAttribute.");
+                throw new InvalidOperationException($"The property '{propertyName}' on type '{fromType.Name}' does not have an SQBForeignKeyAttribute for the target type '{typeof(K).Name}'.");
             }
 
             builder.includes.Add(new SQBInclude
             {
                 TableName = foreignKeyAttribute.ForeignKeyTableName,
                 FieldName = propertyName,
-                TableFrom = fromTableName
+                TableFrom = fromTableName // JOIN'in nereden başlayacağını doğru şekilde belirtiyoruz.
             });
+
+            // tableIndexes listesini de güncellemek iyi bir pratiktir.
+            builder.tableIndexes.Add(foreignKeyAttribute.ForeignKeyTableName);
 
             return builder;
         }
+
+        // ... Diğer Extension Metotlarınız ...
 
         #endregion
 

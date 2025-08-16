@@ -19,7 +19,7 @@ namespace SQLQueryBuilder.Core
         internal List<SQBSqlWhere> whereConditions { get; set; }
         internal List<SQBInclude> includes { get; set; }
         internal List<string> tableIndexes { get; set; }
-        internal List<(string, string)> ColumnAndAlias { get; set; }
+        internal List<(string PropertyName, string Alias)> ColumnAndAlias { get; set; }
         internal long? TakeCount { get; set; }
         internal long? SkipCount { get; set; }
         internal bool IsDistinct { get; set; }
@@ -53,11 +53,6 @@ namespace SQLQueryBuilder.Core
             }
         }
 
-        /// <summary>
-        /// Build query string based on the provided configuration. (It's not required, you might want to use GetSingleAsync/GetListAsync)
-        /// </summary>
-        /// <returns></returns>
-        /// <exception cref="InvalidOperationException"></exception>
         public string BuildQuery()
         {
             if (MainEntityType == null)
@@ -80,44 +75,12 @@ namespace SQLQueryBuilder.Core
             return queryBuilder.ToString();
         }
 
-        /// <summary>
-        /// Takes the type of the main entity to be queried.
-        /// </summary>
-        /// <param name="take"></param>
-        /// <returns></returns>
         public SQLQueryBuilder<T> Take(long take) { this.TakeCount = take; return this; }
-        /// <summary>
-        /// Skips the specified number of records.
-        /// </summary>
-        /// <param name="skip"></param>
-        /// <returns></returns>
         public SQLQueryBuilder<T> Skip(long skip) { this.SkipCount = skip; return this; }
-        /// <summary>
-        /// Groups the query results by the specified column.
-        /// </summary>
-        /// <param name="groupBy"></param>
-        /// <returns></returns>
         public SQLQueryBuilder<T> GroupBy(Expression<Func<T, object>> groupBy) { this.GroupByExpression = groupBy; return this; }
-        /// <summary>
-        /// Sorts the query results by the specified column in ascending or descending order.
-        /// </summary>
-        /// <param name="ascending"></param>
-        /// <returns></returns>
         public SQLQueryBuilder<T> OrderByAscending(Expression<Func<T, object>> ascending) { this.OrderByExpression = ascending; this.Asc = true; return this; }
-        /// <summary>
-        /// Sorts the query results by the specified column in descending order.
-        /// </summary>
-        /// <param name="descending"></param>
-        /// <returns></returns>
         public SQLQueryBuilder<T> OrderByDescending(Expression<Func<T, object>> descending) { this.OrderByExpression = descending; this.Asc = false; return this; }
-
-        /// <summary>
-        /// Page query results.
-        /// </summary>
-        /// <param name="pageIndex">Must be greater than -1</param>
-        /// <param name="pageCount">Must be positive</param>
-        /// <returns></returns>
-        public SQLQueryBuilder<T> Page([Range(0, long.MaxValue)] long pageIndex, [Range(1, long.MaxValue)] long pageCount) { this.Take(pageCount); this.Skip(pageCount * (pageIndex + 1)); return this; }
+        public SQLQueryBuilder<T> Page([Range(0, long.MaxValue)] long pageIndex, [Range(1, long.MaxValue)] long pageCount) { this.Take(pageCount); this.Skip(pageCount * pageIndex); return this; }
 
         internal SQLQueryBuilder<T> SetQueryType(QueryType queryType)
         {
@@ -177,6 +140,21 @@ namespace SQLQueryBuilder.Core
                                     .FirstOrDefault(attr => attr.GetType().IsGenericType && attr.GetType().GetGenericTypeDefinition() == typeof(SQBForeignKeyAttribute<>));
         }
 
+        private static string GetMemberName(Expression expression)
+        {
+            if (expression is UnaryExpression unaryExpression)
+            {
+                expression = unaryExpression.Operand;
+            }
+
+            if (expression is MemberExpression memberExpression)
+            {
+                return memberExpression.Member.Name;
+            }
+
+            throw new ArgumentException("Expression is not a member access", nameof(expression));
+        }
+
         internal static void BuildSelectQuery(SQLQueryBuilder<T> builder, StringBuilder stringBuilder, int tableAliasCounter)
         {
             string mainTableAlias = $"e{tableAliasCounter}";
@@ -193,32 +171,50 @@ namespace SQLQueryBuilder.Core
             if (builder.whereConditions != null && builder.whereConditions.Any())
             {
                 string conditions = GetConditions(builder, mainTableAlias);
-
                 var whereTemplate = builder.sqlImplementation().WhereClauseTemplate();
                 stringBuilder.Append(" ");
                 stringBuilder.AppendFormat(whereTemplate, conditions);
             }
+
             if (builder.GroupByExpression != null)
             {
-                string groupByColumn = builder.GroupByExpression.Body.ToString().Split('.').Last();
+                string groupByColumnName = GetMemberName(builder.GroupByExpression.Body);
+                string groupByAlias = builder.ColumnAndAlias.FirstOrDefault(ca => ca.PropertyName == groupByColumnName).Alias;
                 var groupByTemplate = builder.sqlImplementation().GroupByClauseTemplate();
                 stringBuilder.Append(" ");
-                stringBuilder.AppendFormat(groupByTemplate, $"[{mainTableAlias}].[{groupByColumn}]");
+                stringBuilder.AppendFormat(groupByTemplate, $"[{groupByAlias}]");
             }
 
             if (builder.OrderByExpression != null)
             {
-                string orderByColumn = builder.OrderByExpression.Body.ToString().Split('.').Last();
+                // ** Hatanın düzeltildiği kısım **
+                string propertyName = GetMemberName(builder.OrderByExpression.Body);
+                string orderByAlias = builder.ColumnAndAlias.FirstOrDefault(ca => ca.PropertyName == propertyName).Alias;
+
+                if (string.IsNullOrEmpty(orderByAlias))
+                {
+                    throw new InvalidOperationException($"Could not find alias for property '{propertyName}' to use in ORDER BY clause.");
+                }
+
                 string orderByDirection = builder.Asc.HasValue && builder.Asc.Value ? "ASC" : "DESC";
                 var orderByTemplate = builder.sqlImplementation().OrderByClauseTemplate();
                 stringBuilder.Append(" ");
-                stringBuilder.AppendFormat(orderByTemplate, $"[{mainTableAlias}].[{orderByColumn}] {orderByDirection}");
+                // Alias'ı kullanarak sorgu oluştur
+                stringBuilder.AppendFormat(orderByTemplate, $"[{orderByAlias}] {orderByDirection}");
             }
 
-            if (builder.TakeCount.HasValue)
+            if (builder.SkipCount.HasValue || builder.TakeCount.HasValue)
             {
-                stringBuilder.Append($"OFFSET {builder.TakeCount.Value} ROWS");
-                stringBuilder.Append($" FETCH NEXT {builder.SkipCount ?? 0} ROWS ONLY");
+                if (builder.OrderByExpression == null)
+                {
+                    throw new InvalidOperationException("SKIP or TAKE requires an ORDER BY clause.");
+                }
+
+                stringBuilder.Append($" OFFSET {builder.SkipCount ?? 0} ROWS");
+                if (builder.TakeCount.HasValue)
+                {
+                    stringBuilder.Append($" FETCH NEXT {builder.TakeCount.Value} ROWS ONLY");
+                }
             }
 
             stringBuilder.Append(";");
@@ -236,6 +232,7 @@ namespace SQLQueryBuilder.Core
 
         internal static string BuildJoinClause(SQLQueryBuilder<T> builder, ref int tableAliasCounter, string mainTableAlias, StringBuilder columnsBuilder)
         {
+            // ... (Bu metotta değişiklik yok) ...
             var joinsBuilder = new StringBuilder();
             var aliasToTypeMap = new Dictionary<string, Type> { { mainTableAlias, builder.MainEntityType } };
             var nameToAliasMap = new Dictionary<string, string> { { builder.TableName, mainTableAlias } };
@@ -288,21 +285,22 @@ namespace SQLQueryBuilder.Core
 
         internal static List<(string, string)> AppendColumnsWithAlias(SQLQueryBuilder<T> builder, StringBuilder columnsBuilder, Type entityType, string tableAlias)
         {
-            List<(string, string)> ColumnAndAlias = new List<(string, string)>();
+            var currentAliases = new List<(string, string)>();
             var properties = entityType.GetProperties();
             foreach (var prop in properties)
             {
                 var columnAttr = prop.GetCustomAttribute<SQBPropertyAttribute>();
                 var columnName = columnAttr?.SqlFieldName ?? prop.Name;
+                var aliasName = $"{tableAlias}_{prop.Name}";
 
                 if (columnsBuilder.Length > 0)
                 {
                     columnsBuilder.Append(", ");
                 }
-                columnsBuilder.Append($"[{tableAlias}].[{columnName}] AS [{tableAlias}_{prop.Name}]");
-                ColumnAndAlias.Add((columnName, $"{tableAlias}_{prop.Name}"));
+                columnsBuilder.Append($"[{tableAlias}].[{columnName}] AS [{aliasName}]");
+                currentAliases.Add((prop.Name, aliasName));
             }
-            return ColumnAndAlias;
+            return currentAliases;
         }
     }
 }
