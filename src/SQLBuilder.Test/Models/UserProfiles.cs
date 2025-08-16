@@ -6,11 +6,14 @@ namespace SQLBuilder.Test.Models
     public class UserProfiles
     {
         [SQBForeignKey<User>]
+        [SQBPrimaryKey]
         public int Id { get; set; }
 
         public DateTime CreatedOn { get; set; }
+        [SQBForeignKey<User>]
         public int? CreatedBy { get; set; }
         public DateTime? UpdatedOn { get; set; }
+        [SQBForeignKey<User>]
         public int? UpdatedBy { get; set; }
         public bool IsActive { get; set; } = true;
         public bool IsDeleted { get; set; } = false;

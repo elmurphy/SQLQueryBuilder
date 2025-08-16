@@ -67,6 +67,10 @@ namespace SQLQueryBuilder.Core
 
                         builder.tableIndexes.Add(foreignKeyAttribute.ForeignKeyTableName);
                     }
+                    else
+                    {
+                        throw new InvalidOperationException($"The property '{propertyInfo.Name}' on type '{type.Name}' does not have an SQBForeignKeyAttribute for the target type '{typeof(V).Name}'.");
+                    }
                 }
                 else
                 {
@@ -150,7 +154,7 @@ namespace SQLQueryBuilder.Core
 
             if (expression != null)
             {
-                builder.whereConditions.AddRange(ExpressionParser.Parse(expression.Body));
+                builder.WhereCondition = ExpressionParser.Parse(expression.Body);
             }
 
             return builder;

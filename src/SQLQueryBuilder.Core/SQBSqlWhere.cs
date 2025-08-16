@@ -1,21 +1,31 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-
-namespace SQLQueryBuilder.Core
+﻿namespace SQLQueryBuilder.Core
 {
+    public enum LogicalOperator
+    {
+        AND,
+        OR
+    }
+
     public class SQBSqlWhere
     {
+        // Basit koşullar için (örn: ColumnName = Value)
         public string ColumnName { get; set; }
+        public string FunctionTemplate { get; set; } = "{0}";
         public string Operation { get; set; }
         public string Value { get; set; }
-        public bool ValueHasSingleQuote { get; set; }
-        public string FunctionTemplate { get; set; } = "{0}"; // Varsayılan: Fonksiyon yok, sadece kolon adı
 
-        // ValueHasSingleQuote yerine bu iki alan kullanılacak
-        public bool IsValueEscaped { get; set; } // Değerin tırnak işaretleri zaten eklenmiş mi?
-        public bool IsValueFunction { get; set; } // Name alanı bir fonksiyon mu (örn: LEN(Name))?
+        // Gruplanmış koşullar için (örn: ( ... ) AND ( ... ))
+        public LogicalOperator Operator { get; set; } = LogicalOperator.AND;
+        public List<SQBSqlWhere> NestedConditions { get; set; }
+
+        /// <summary>
+        /// Bu düğümün bir grup olup olmadığını belirtir.
+        /// </summary>
+        public bool IsGroup => NestedConditions != null && NestedConditions.Any();
+
+        public SQBSqlWhere()
+        {
+            NestedConditions = new List<SQBSqlWhere>();
+        }
     }
 }

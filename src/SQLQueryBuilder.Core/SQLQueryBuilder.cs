@@ -16,7 +16,7 @@ namespace SQLQueryBuilder.Core
         internal QueryType queryType { get; set; }
         internal string TableName { get; set; }
         internal List<SQBProperty> SQBProperties { get; set; }
-        internal List<SQBSqlWhere> whereConditions { get; set; }
+        internal SQBSqlWhere WhereCondition { get; set; }
         internal List<SQBInclude> includes { get; set; }
         internal List<string> tableIndexes { get; set; }
         internal List<(string PropertyName, string Alias)> ColumnAndAlias { get; set; }
@@ -27,14 +27,11 @@ namespace SQLQueryBuilder.Core
 
         internal bool? Asc { get; set; }
         internal Expression<Func<T, object>> OrderByExpression { get; set; }
-
         internal Expression<Func<T, object>> GroupByExpression { get; set; }
-
 
         internal SQLQueryBuilder()
         {
             SQBProperties = new List<SQBProperty>();
-            whereConditions = new List<SQBSqlWhere>();
             includes = new List<SQBInclude>();
             tableIndexes = new List<string>();
             ColumnAndAlias = new List<(string, string)>();
@@ -68,7 +65,6 @@ namespace SQLQueryBuilder.Core
                 case QueryType.Select:
                     BuildSelectQuery(this, queryBuilder, tableAliasCounter);
                     break;
-
                 default:
                     throw new InvalidOperationException("Unsupported query type.");
             }
@@ -87,6 +83,7 @@ namespace SQLQueryBuilder.Core
             this.queryType = queryType;
             return this;
         }
+
         internal SQLQueryBuilder<T> SetTableName()
         {
             Type type = typeof(T);
@@ -95,11 +92,11 @@ namespace SQLQueryBuilder.Core
             this.TableName = tableName;
             return this;
         }
+
         internal SQLQueryBuilder<T> SetProperties()
         {
             Type type = typeof(T);
-            List<PropertyInfo> properties = type.GetProperties()
-                .ToList();
+            List<PropertyInfo> properties = type.GetProperties().ToList();
             foreach (var property in properties)
             {
                 string propertyName = property.GetCustomAttribute<SQBPropertyAttribute>()?.SqlFieldName ?? property.Name;
@@ -112,32 +109,6 @@ namespace SQLQueryBuilder.Core
                 this.SQBProperties.Add(sqbProperty);
             }
             return this;
-        }
-
-        internal static string GetLeftJoinSql(string joinedTableName, string joinedTableAlias, string mainTableAlias, string fkColumnName, string joinedPrimaryKey)
-        {
-            return $" LEFT JOIN [{joinedTableName}] AS [{joinedTableAlias}] ON [{mainTableAlias}].[{fkColumnName}] = [{joinedTableAlias}].[{joinedPrimaryKey!}]";
-        }
-
-        internal static string GetJoinedTableName(Type joinedType, SQBTableAttribute? joinedTableAttr)
-        {
-            return joinedTableAttr?.TableName ?? joinedType.Name;
-        }
-
-        internal static SQBTableAttribute? GetJoinedTableAttr(Type joinedType)
-        {
-            return (SQBTableAttribute)Attribute.GetCustomAttribute(joinedType, typeof(SQBTableAttribute));
-        }
-
-        internal static Type GetJoinedType(object foreignKeyAttr)
-        {
-            return foreignKeyAttr.GetType().GetGenericArguments()[0];
-        }
-
-        internal static object? GetForeignKeyAttr(PropertyInfo foreignKeyProp)
-        {
-            return foreignKeyProp.GetCustomAttributes(false)
-                                    .FirstOrDefault(attr => attr.GetType().IsGenericType && attr.GetType().GetGenericTypeDefinition() == typeof(SQBForeignKeyAttribute<>));
         }
 
         private static string GetMemberName(Expression expression)
@@ -160,17 +131,16 @@ namespace SQLQueryBuilder.Core
             string mainTableAlias = $"e{tableAliasCounter}";
             var columnsBuilder = new StringBuilder();
 
-            builder.ColumnAndAlias = AppendColumnsWithAlias(builder, columnsBuilder, builder.MainEntityType, mainTableAlias);
-
+            builder.ColumnAndAlias.AddRange(AppendColumnsWithAlias(columnsBuilder, builder.MainEntityType, mainTableAlias));
             string joinClause = BuildJoinClause(builder, ref tableAliasCounter, mainTableAlias, columnsBuilder);
 
             var selectTemplate = builder.sqlImplementation().SelectQueryTemplate();
             stringBuilder.AppendFormat(selectTemplate, columnsBuilder.ToString(), $"[{builder.TableName}] AS [{mainTableAlias}]");
             stringBuilder.Append(joinClause);
 
-            if (builder.whereConditions != null && builder.whereConditions.Any())
+            if (builder.WhereCondition != null && (builder.WhereCondition.IsGroup || !string.IsNullOrEmpty(builder.WhereCondition.ColumnName)))
             {
-                string conditions = GetConditions(builder, mainTableAlias);
+                string conditions = BuildWhereClauseRecursive(builder.WhereCondition, mainTableAlias);
                 var whereTemplate = builder.sqlImplementation().WhereClauseTemplate();
                 stringBuilder.Append(" ");
                 stringBuilder.AppendFormat(whereTemplate, conditions);
@@ -179,28 +149,18 @@ namespace SQLQueryBuilder.Core
             if (builder.GroupByExpression != null)
             {
                 string groupByColumnName = GetMemberName(builder.GroupByExpression.Body);
-                string groupByAlias = builder.ColumnAndAlias.FirstOrDefault(ca => ca.PropertyName == groupByColumnName).Alias;
                 var groupByTemplate = builder.sqlImplementation().GroupByClauseTemplate();
                 stringBuilder.Append(" ");
-                stringBuilder.AppendFormat(groupByTemplate, $"[{groupByAlias}]");
+                stringBuilder.AppendFormat(groupByTemplate, $"[{mainTableAlias}].[{groupByColumnName}]");
             }
 
             if (builder.OrderByExpression != null)
             {
-                // ** Hatanın düzeltildiği kısım **
                 string propertyName = GetMemberName(builder.OrderByExpression.Body);
-                string orderByAlias = builder.ColumnAndAlias.FirstOrDefault(ca => ca.PropertyName == propertyName).Alias;
-
-                if (string.IsNullOrEmpty(orderByAlias))
-                {
-                    throw new InvalidOperationException($"Could not find alias for property '{propertyName}' to use in ORDER BY clause.");
-                }
-
                 string orderByDirection = builder.Asc.HasValue && builder.Asc.Value ? "ASC" : "DESC";
                 var orderByTemplate = builder.sqlImplementation().OrderByClauseTemplate();
                 stringBuilder.Append(" ");
-                // Alias'ı kullanarak sorgu oluştur
-                stringBuilder.AppendFormat(orderByTemplate, $"[{orderByAlias}] {orderByDirection}");
+                stringBuilder.AppendFormat(orderByTemplate, $"[{mainTableAlias}].[{propertyName}] {orderByDirection}");
             }
 
             if (builder.SkipCount.HasValue || builder.TakeCount.HasValue)
@@ -220,19 +180,23 @@ namespace SQLQueryBuilder.Core
             stringBuilder.Append(";");
         }
 
-        internal static string GetConditions(SQLQueryBuilder<T> builder, string mainTableAlias)
+        private static string BuildWhereClauseRecursive(SQBSqlWhere condition, string tableAlias)
         {
-            return string.Join(" AND ", builder.whereConditions.Select(x =>
+            if (!condition.IsGroup)
             {
-                string aliasedColumn = $"[{mainTableAlias}].[{x.ColumnName}]";
-                string fieldPart = string.Format(x.FunctionTemplate, aliasedColumn);
-                return $"{fieldPart} {x.Operation} {x.Value}";
-            }));
+                string aliasedColumn = $"[{tableAlias}].[{condition.ColumnName}]";
+                string fieldPart = string.Format(condition.FunctionTemplate, aliasedColumn);
+                return $"{fieldPart} {condition.Operation} {condition.Value}";
+            }
+            else
+            {
+                var clauses = condition.NestedConditions.Select(c => BuildWhereClauseRecursive(c, tableAlias));
+                return $"({string.Join($" {condition.Operator} ", clauses)})";
+            }
         }
 
         internal static string BuildJoinClause(SQLQueryBuilder<T> builder, ref int tableAliasCounter, string mainTableAlias, StringBuilder columnsBuilder)
         {
-            // ... (Bu metotta değişiklik yok) ...
             var joinsBuilder = new StringBuilder();
             var aliasToTypeMap = new Dictionary<string, Type> { { mainTableAlias, builder.MainEntityType } };
             var nameToAliasMap = new Dictionary<string, string> { { builder.TableName, mainTableAlias } };
@@ -264,11 +228,11 @@ namespace SQLQueryBuilder.Core
 
                     var joinedType = GetJoinedType(foreignKeyAttr);
 
-                    AppendColumnsWithAlias(builder, columnsBuilder, joinedType, joinedTableAlias);
+                    builder.ColumnAndAlias.AddRange(AppendColumnsWithAlias(columnsBuilder, joinedType, joinedTableAlias));
 
                     var joinedTableAttr = GetJoinedTableAttr(joinedType);
                     var joinedTableName = GetJoinedTableName(joinedType, joinedTableAttr);
-                    var joinedPrimaryKey = joinedType.GetProperties().FirstOrDefault(p => p.GetCustomAttribute<SQBPrimaryKeyAttribute>() != null)?.Name;
+                    var joinedPrimaryKey = joinedType.GetProperties().FirstOrDefault(p => p.GetCustomAttribute<SQBPrimaryKeyAttribute>() != null)?.Name ?? "Id";
 
                     var fkColumnAttr = foreignKeyProp.GetCustomAttribute<SQBPropertyAttribute>();
                     var fkColumnName = fkColumnAttr?.SqlFieldName ?? foreignKeyProp.Name;
@@ -283,7 +247,7 @@ namespace SQLQueryBuilder.Core
             return joinsBuilder.ToString();
         }
 
-        internal static List<(string, string)> AppendColumnsWithAlias(SQLQueryBuilder<T> builder, StringBuilder columnsBuilder, Type entityType, string tableAlias)
+        internal static List<(string, string)> AppendColumnsWithAlias(StringBuilder columnsBuilder, Type entityType, string tableAlias)
         {
             var currentAliases = new List<(string, string)>();
             var properties = entityType.GetProperties();
@@ -301,6 +265,32 @@ namespace SQLQueryBuilder.Core
                 currentAliases.Add((prop.Name, aliasName));
             }
             return currentAliases;
+        }
+
+        internal static string GetLeftJoinSql(string joinedTableName, string joinedTableAlias, string mainTableAlias, string fkColumnName, string joinedPrimaryKey)
+        {
+            return $" LEFT JOIN [{joinedTableName}] AS [{joinedTableAlias}] ON [{mainTableAlias}].[{fkColumnName}] = [{joinedTableAlias}].[{joinedPrimaryKey!}]";
+        }
+
+        internal static string GetJoinedTableName(Type joinedType, SQBTableAttribute? joinedTableAttr)
+        {
+            return joinedTableAttr?.TableName ?? joinedType.Name;
+        }
+
+        internal static SQBTableAttribute? GetJoinedTableAttr(Type joinedType)
+        {
+            return (SQBTableAttribute)Attribute.GetCustomAttribute(joinedType, typeof(SQBTableAttribute));
+        }
+
+        internal static Type GetJoinedType(object foreignKeyAttr)
+        {
+            return foreignKeyAttr.GetType().GetGenericArguments()[0];
+        }
+
+        internal static object? GetForeignKeyAttr(PropertyInfo foreignKeyProp)
+        {
+            return foreignKeyProp.GetCustomAttributes(false)
+                .FirstOrDefault(attr => attr.GetType().IsGenericType && attr.GetType().GetGenericTypeDefinition() == typeof(SQBForeignKeyAttribute<>));
         }
     }
 }
