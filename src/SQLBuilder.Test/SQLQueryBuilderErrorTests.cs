@@ -271,7 +271,7 @@ namespace SQLBuilder.Test
                 .Where(u => u.CreatedOn == DateTime.MaxValue)
                 .BuildQuery();
             
-            // Use the actual format that the SQL builder produces (Turkish/local format)
+            // Use the actual DateTime format that the SQL builder produces based on system locale
             StringAssert.Contains("1.01.0001 00:00:00", query1);
             StringAssert.Contains("31.12.9999 23:59:59", query2);
         }

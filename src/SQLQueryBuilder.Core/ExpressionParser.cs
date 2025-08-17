@@ -7,16 +7,38 @@ using System.Reflection;
 
 namespace SQLQueryBuilder.Core
 {
+    /// <summary>
+    /// Represents a parsed member expression with its table alias and column name.
+    /// </summary>
+    /// <param name="TableAlias">The table alias used in the SQL query</param>
+    /// <param name="ColumnName">The column name from the entity property</param>
     public record ParsedMember(string TableAlias, string ColumnName);
 
+    /// <summary>
+    /// Static class that provides expression parsing functionality for converting LINQ expressions to SQL WHERE conditions.
+    /// </summary>
     public static class ExpressionParser
     {
+        /// <summary>
+        /// Parses a LINQ expression into a SQL WHERE condition structure.
+        /// </summary>
+        /// <typeparam name="T">The entity type</typeparam>
+        /// <param name="builder">The SQLQueryBuilder instance containing type mappings</param>
+        /// <param name="expression">The LINQ expression to parse</param>
+        /// <returns>A SQBSqlWhere object representing the SQL condition</returns>
         public static SQBSqlWhere Parse<T>(SQLQueryBuilder<T> builder, Expression expression) where T : class, new()
         {
             var visitor = new AliasExpressionVisitor(builder);
             return visitor.Translate(expression);
         }
 
+        /// <summary>
+        /// Parses a LINQ expression to extract member information (table aliases and column names).
+        /// </summary>
+        /// <typeparam name="T">The entity type</typeparam>
+        /// <param name="builder">The SQLQueryBuilder instance containing type mappings</param>
+        /// <param name="expression">The LINQ expression to parse</param>
+        /// <returns>A list of ParsedMember objects containing table aliases and column names</returns>
         public static List<ParsedMember> ParseMembers<T>(SQLQueryBuilder<T> builder, Expression expression) where T : class, new()
         {
             var visitor = new AliasExpressionVisitor(builder);
@@ -199,18 +221,33 @@ namespace SQLQueryBuilder.Core
             }
         }
 
-        #region Helper Metotları
+        #region Helper Methods
+        /// <summary>
+        /// Extracts the actual value from an expression by evaluating constants or compiling and invoking lambda expressions.
+        /// </summary>
+        /// <param name="expression">The expression to evaluate</param>
+        /// <returns>The actual value of the expression</returns>
         private static object GetValueFromExpression(Expression expression)
         {
             if (expression is ConstantExpression constantExpression) return constantExpression.Value;
             return Expression.Lambda(expression).Compile().DynamicInvoke();
         }
 
+        /// <summary>
+        /// Determines whether an expression can be evaluated as a constant value (doesn't contain parameter references).
+        /// </summary>
+        /// <param name="expression">The expression to check</param>
+        /// <returns>True if the expression can be evaluated as a value, false if it contains parameter references</returns>
         private static bool CanBeEvaluatedAsValue(Expression expression)
         {
             return !new ParameterVisitor().ContainsParameter(expression);
         }
 
+        /// <summary>
+        /// Formats a .NET value into its SQL string representation with proper quoting and null handling.
+        /// </summary>
+        /// <param name="value">The value to format</param>
+        /// <returns>A string representation suitable for use in SQL queries</returns>
         private static string FormatValue(object value)
         {
             if (value == null) return "NULL";
@@ -220,6 +257,12 @@ namespace SQLQueryBuilder.Core
             return value.ToString();
         }
 
+        /// <summary>
+        /// Converts a LINQ expression type to its corresponding SQL operator string.
+        /// </summary>
+        /// <param name="type">The expression type to convert</param>
+        /// <returns>The SQL operator string</returns>
+        /// <exception cref="NotSupportedException">Thrown when the expression type is not supported</exception>
         private static string GetSqlOperator(ExpressionType type) => type switch
         {
             ExpressionType.Equal => "=",
@@ -231,6 +274,11 @@ namespace SQLQueryBuilder.Core
             _ => throw new NotSupportedException($"Unsupported operator: {type}"),
         };
 
+        /// <summary>
+        /// Flips comparison operators when operands are swapped in binary expressions.
+        /// </summary>
+        /// <param name="op">The original operator to flip</param>
+        /// <returns>The flipped operator, or the original if no flipping is needed</returns>
         private static string FlipOperator(string op) => op switch
         {
             ">" => "<",
@@ -240,15 +288,30 @@ namespace SQLQueryBuilder.Core
             _ => op
         };
 
+        /// <summary>
+        /// Expression visitor that checks whether an expression tree contains any parameter expressions.
+        /// </summary>
         private class ParameterVisitor : ExpressionVisitor
         {
             private bool _containsParameter;
+            
+            /// <summary>
+            /// Checks if the given expression node contains any parameter expressions.
+            /// </summary>
+            /// <param name="node">The expression to check</param>
+            /// <returns>True if the expression contains parameter references, false otherwise</returns>
             public bool ContainsParameter(Expression node)
             {
                 _containsParameter = false;
                 Visit(node);
                 return _containsParameter;
             }
+            
+            /// <summary>
+            /// Visits parameter expressions and sets the flag indicating parameter presence.
+            /// </summary>
+            /// <param name="node">The parameter expression node</param>
+            /// <returns>The visited expression</returns>
             protected override Expression VisitParameter(ParameterExpression node)
             {
                 _containsParameter = true;
