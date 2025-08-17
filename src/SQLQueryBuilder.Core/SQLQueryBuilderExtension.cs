@@ -5,259 +5,98 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
-using System.Reflection.Metadata.Ecma335;
-using System.Text;
 using System.Threading.Tasks;
 
 namespace SQLQueryBuilder.Core
 {
     public static class SQLQueryBuilderExtension
     {
-        #region Private Methods
-
-        // Bu yardımcı metodun private olarak sınıf içinde olduğundan emin olun
-        private static MemberExpression GetMemberExpression<T>(Expression<Func<T, object>> expression)
-        {
-            var body = expression.Body;
-            if (body is UnaryExpression unaryExpression)
-            {
-                body = unaryExpression.Operand;
-            }
-
-            if (body is MemberExpression memberExpression)
-            {
-                return memberExpression;
-            }
-
-            throw new ArgumentException("The expression must be a member access expression.", nameof(expression));
-        }
-
-        #endregion
-
-        #region Select Additional Methods
-
-        // Mevcut Include metodunuz (Referans olarak)
         public static SQLQueryBuilder<T> Include<T, V>(this SQLQueryBuilder<T> builder, Expression<Func<T, object>> foreignKeySelector)
-            where T : class, new()
-            where V : class, new()
+            where T : class, new() where V : class, new()
         {
-            Type type = typeof(T);
-            SQBTableAttribute? tableAttribute = type.GetCustomAttribute<SQBTableAttribute>();
-            var tableName = tableAttribute != null ? tableAttribute.TableName : type.Name;
-
-            var body = foreignKeySelector.Body;
-            if (body is UnaryExpression unaryExpression)
+            var member = GetMemberExpression(foreignKeySelector.Body);
+            builder.includes.Add(new SQBInclude
             {
-                body = unaryExpression.Operand;
-            }
-
-            if (body is MemberExpression memberExpression)
-            {
-                if (memberExpression.Member is PropertyInfo propertyInfo)
-                {
-                    var foreignKeyAttribute = propertyInfo.GetCustomAttribute<SQBForeignKeyAttribute<V>>();
-                    if (foreignKeyAttribute != null)
-                    {
-                        builder.includes.Add(new SQBInclude
-                        {
-                            TableName = foreignKeyAttribute.ForeignKeyTableName,
-                            FieldName = propertyInfo.Name,
-                            TableFrom = builder.TableName
-                        });
-
-                        builder.tableIndexes.Add(foreignKeyAttribute.ForeignKeyTableName);
-                    }
-                    else
-                    {
-                        throw new InvalidOperationException($"The property '{propertyInfo.Name}' on type '{type.Name}' does not have an SQBForeignKeyAttribute for the target type '{typeof(V).Name}'.");
-                    }
-                }
-                else
-                {
-                    throw new ArgumentException("Seçilen üye bir özellik (property) olmalıdır.", nameof(foreignKeySelector));
-                }
-            }
-            else
-            {
-                throw new ArgumentException("İfade bir özellik seçimi olmalıdır (örn: x => x.CategoryId).", nameof(foreignKeySelector));
-            }
-
+                TypeFrom = typeof(T),
+                FieldName = member.Member.Name
+            });
             return builder;
         }
 
-        // *** DÜZELTİLMİŞ VE DOĞRU ÇALIŞAN THENINCLUDE METODU ***
         public static SQLQueryBuilder<T> ThenInclude<T, V, K>(this SQLQueryBuilder<T> builder, Expression<Func<V, object>> foreignKeySelector)
-            where T : class, new() // Ana sorgu tipi (Product)
-            where V : class, new() // Önceki Include'un tipi, YENİ JOIN'in başlangıç noktası (Category)
-            where K : class, new() // JOIN yapılacak yeni hedef tip (Parent Category)
+            where T : class, new() where V : class, new() where K : class, new()
         {
             if (!builder.includes.Any())
             {
                 throw new InvalidOperationException("ThenInclude must be called after an Include method.");
             }
-
-            // HATA BURADAYDI: Type fromType = typeof(T) yerine typeof(V) olmalı.
-            Type fromType = typeof(V);
-            SQBTableAttribute? fromTableAttribute = fromType.GetCustomAttribute<SQBTableAttribute>();
-            var fromTableName = fromTableAttribute != null ? fromTableAttribute.TableName : fromType.Name;
-
-            // GetMemberExpression'a foreignKeySelector'ı doğrudan geçiyoruz.
-            var memberExpression = GetMemberExpression(foreignKeySelector);
-            var propertyName = memberExpression.Member.Name;
-
-            if (!(memberExpression.Member is PropertyInfo propertyInfo))
-            {
-                throw new ArgumentException("The selected member must be a property.", nameof(foreignKeySelector));
-            }
-
-            // HATA BURADAYDI: foreignKeyAttribute'ü <V> yerine <K> ile aramalıyız.
-            var foreignKeyAttribute = propertyInfo.GetCustomAttribute<SQBForeignKeyAttribute<K>>();
-            if (foreignKeyAttribute == null)
-            {
-                throw new InvalidOperationException($"The property '{propertyName}' on type '{fromType.Name}' does not have an SQBForeignKeyAttribute for the target type '{typeof(K).Name}'.");
-            }
-
+            var member = GetMemberExpression(foreignKeySelector.Body);
             builder.includes.Add(new SQBInclude
             {
-                TableName = foreignKeyAttribute.ForeignKeyTableName,
-                FieldName = propertyName,
-                TableFrom = fromTableName // JOIN'in nereden başlayacağını doğru şekilde belirtiyoruz.
+                TypeFrom = typeof(V),
+                FieldName = member.Member.Name,
             });
-
-            // tableIndexes listesini de güncellemek iyi bir pratiktir.
-            builder.tableIndexes.Add(foreignKeyAttribute.ForeignKeyTableName);
-
             return builder;
         }
 
-        // ... Diğer Extension Metotlarınız ...
-
-        #endregion
-
-
-        #region Get
-
-        /// <summary>
-        /// Constructs a SQLQueryBuilder for the specified type T.
-        /// </summary>
-        /// <typeparam name="T"></typeparam>
-        /// <param name="expression">Apply where query here. Just like EF</param>
-        /// <returns></returns>
         public static SQLQueryBuilder<T> ConstructBuilder<T>(Expression<Func<T, bool>>? expression = null)
             where T : class, new()
         {
             var builder = new SQLQueryBuilder<T>();
-            builder.MainEntityType = typeof(T);
             builder.SetQueryType(QueryType.Select);
             builder.SetTableName();
-            builder.SetProperties();
+            builder.MainEntityType = typeof(T);
 
             if (expression != null)
             {
-                builder.WhereCondition = ExpressionParser.Parse(expression.Body);
+                builder.Where(expression);
             }
 
             return builder;
         }
-        #endregion
 
-        #region Operations
-        public static SQLQueryBuilder<T> QueryInsert<T>(T value)
-            where T : class, new()
+        #region Helper
+        private static MemberExpression GetMemberExpression(Expression expression)
         {
-            throw new NotImplementedException("Single insert operation is not implemented yet. Use QueryInsert(List<T> values) for bulk insert.");
-        }
-        public static SQLQueryBuilder<T> QueryUpdate<T>(T value)
-            where T : class, new()
-        {
-            throw new NotImplementedException("Single update operation is not implemented yet. Use QueryUpdate(List<T> values) for bulk update.");
-        }
-        public static SQLQueryBuilder<T> QueryDelete<T>(T value)
-            where T : class, new()
-        {
-            throw new NotImplementedException("Single delete operation is not implemented yet. Use QueryDelete(List<T> values) for bulk delete.");
-        }
-        #endregion
-
-        #region Bulk Operations
-        public static SQLQueryBuilder<T> QueryInsert<T>(List<T> values)
-            where T : class, new()
-        {
-            throw new NotImplementedException("Bulk insert operation is not implemented yet.");
-        }
-
-        public static SQLQueryBuilder<T> QueryUpdate<T>(List<T> values)
-            where T : class, new()
-        {
-            throw new NotImplementedException("Bulk update operation is not implemented yet.");
-        }
-
-        public static SQLQueryBuilder<T> QueryDelete<T>(List<T> values)
-            where T : class, new()
-        {
-            throw new NotImplementedException("Bulk delete operation is not implemented yet.");
-        }
-        #endregion
-        #region Sql Execution Methods
-
-        /// <summary>
-        /// Get a single record from the database based on the SQLQueryBuilder configuration.
-        /// </summary>
-        /// <typeparam name="T"></typeparam>
-        /// <param name="builder"></param>
-        /// <returns></returns>
-        public static async Task<T?> GetSingleAsync<T>(this SQLQueryBuilder<T> builder)
-            where T : class, new()
-        {
-            List<T> results = new List<T>();
-            string sqlQuery = builder.BuildQuery();
-
-            using (SqlConnection connection = new SqlConnection("Server=localhost,1433;Database=SqlSample;User Id=sa;Password=As.1234567890;TrustServerCertificate=True;"))
+            if (expression is UnaryExpression unary)
             {
-                await connection.OpenAsync();
-                using (SqlCommand command = new SqlCommand(sqlQuery, connection))
-                {
-                    using (SqlDataReader reader = await command.ExecuteReaderAsync())
-                    {
-                        results.AddRange(reader.MapToList<T>(builder));
-                    }
-                }
+                return (MemberExpression)unary.Operand;
             }
+            return (MemberExpression)expression;
+        }
+        #endregion
 
-            return results.FirstOrDefault();
+        #region Sql Execution Methods
+        public static async Task<T> GetSingleAsync<T>(this SQLQueryBuilder<T> builder)
+            where T : class, new()
+        {
+            var list = await GetListAsync(builder);
+            return list.FirstOrDefault();
         }
 
-        /// <summary>
-        /// Get a list of records from the database based on the SQLQueryBuilder configuration.
-        /// </summary>
-        /// <typeparam name="T"></typeparam>
-        /// <param name="builder"></param>
-        /// <returns></returns>
         public static async Task<List<T>> GetListAsync<T>(this SQLQueryBuilder<T> builder)
             where T : class, new()
         {
             List<T> results = new List<T>();
             string sqlQuery = builder.BuildQuery();
 
-            using (SqlConnection connection = new SqlConnection("Server=localhost,1433;Database=SqlSample;User Id=sa;Password=As.1234567890;TrustServerCertificate=True;"))
+            using (var connection = new SqlConnection("Server=localhost,1433;Database=SqlSample;User Id=sa;Password=As.1234567890;TrustServerCertificate=True;"))
             {
                 await connection.OpenAsync();
-                using (SqlCommand command = new SqlCommand(sqlQuery, connection))
+                using (var command = new SqlCommand(sqlQuery, connection))
+                using (var reader = await command.ExecuteReaderAsync())
                 {
-                    using (SqlDataReader reader = await command.ExecuteReaderAsync())
-                    {
-                        results.AddRange(reader.MapToList<T>(builder));
-                    }
+                    results.AddRange(reader.MapToList(builder));
                 }
             }
-
             return results;
         }
+
         internal static List<T> MapToList<T>(this SqlDataReader reader, SQLQueryBuilder<T> builder) where T : class, new()
         {
             var results = new List<T>();
+            var properties = typeof(T).GetProperties();
 
-            PropertyInfo[] properties = typeof(T).GetProperties();
             while (reader.Read())
             {
                 var item = new T();
@@ -265,22 +104,21 @@ namespace SQLQueryBuilder.Core
                 {
                     try
                     {
-                        var propertyAlias = builder.ColumnAndAlias.FirstOrDefault(x => x.Item1 == property.Name).Item2 ?? property.Name;
-                        int ordinal = reader.GetOrdinal(propertyAlias);
-                        if (!reader.IsDBNull(ordinal))
+                        var aliasInfo = builder.ColumnAndAlias.FirstOrDefault(x => x.PropertyName == property.Name);
+                        if (aliasInfo != default)
                         {
-                            object value = reader.GetValue(ordinal);
-                            property.SetValue(item, value);
+                            int ordinal = reader.GetOrdinal(aliasInfo.Alias);
+                            if (!reader.IsDBNull(ordinal))
+                            {
+                                object value = reader.GetValue(ordinal);
+                                property.SetValue(item, value);
+                            }
                         }
                     }
-                    catch (IndexOutOfRangeException)
-                    {
-                        continue;
-                    }
+                    catch (IndexOutOfRangeException) { /* Kolon bulunamadı, devam et */ }
                 }
                 results.Add(item);
             }
-
             return results;
         }
         #endregion

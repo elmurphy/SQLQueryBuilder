@@ -1,7 +1,6 @@
 ﻿using SQLQueryBuilder.Flags;
 using System;
 using System.Collections.Generic;
-using System.ComponentModel.DataAnnotations;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
@@ -9,288 +8,231 @@ using System.Text;
 
 namespace SQLQueryBuilder.Core
 {
-    public class SQLQueryBuilder<T>
-        where T : class, new()
+    public class SQLQueryBuilder<T> where T : class, new()
     {
         internal Type MainEntityType { get; set; }
         internal QueryType queryType { get; set; }
         internal string TableName { get; set; }
-        internal List<SQBProperty> SQBProperties { get; set; }
-        internal SQBSqlWhere WhereCondition { get; set; }
+        internal List<Expression> WhereExpressions { get; set; }
         internal List<SQBInclude> includes { get; set; }
-        internal List<string> tableIndexes { get; set; }
         internal List<(string PropertyName, string Alias)> ColumnAndAlias { get; set; }
         internal long? TakeCount { get; set; }
         internal long? SkipCount { get; set; }
-        internal bool IsDistinct { get; set; }
-        internal bool IsForUpdate { get; set; }
+        internal List<(LambdaExpression Expression, bool Ascending)> OrderByClauses { get; set; }
+        internal LambdaExpression GroupByExpression { get; set; }
 
-        internal bool? Asc { get; set; }
-        internal Expression<Func<T, object>> OrderByExpression { get; set; }
-        internal Expression<Func<T, object>> GroupByExpression { get; set; }
+        internal string mainTableAlias;
+        internal readonly Dictionary<Type, string> typeToAliasMap = new();
+        internal int tableAliasCounter = 0;
 
         internal SQLQueryBuilder()
         {
-            SQBProperties = new List<SQBProperty>();
+            WhereExpressions = new List<Expression>();
             includes = new List<SQBInclude>();
-            tableIndexes = new List<string>();
             ColumnAndAlias = new List<(string, string)>();
+            OrderByClauses = new List<(LambdaExpression, bool)>();
         }
 
-        public ISQBLImplementation sqlImplementation(DatabaseType databaseType = DatabaseType.MSSQL)
+        public SQLQueryBuilder<T> Where(Expression<Func<T, bool>> expression)
         {
-            switch (databaseType)
+            if (expression != null)
             {
-                case DatabaseType.MSSQL:
-                    return new SQBMSSQLImplementation();
-                case DatabaseType.PostgreSQL:
-                    throw new NotImplementedException("PostgreSQL implementation is not yet available.");
-                default:
-                    throw new InvalidOperationException("Unsupported database type.");
+                WhereExpressions.Add(expression.Body);
             }
+            return this;
         }
 
         public string BuildQuery()
         {
-            if (MainEntityType == null)
-            {
-                throw new InvalidOperationException("Main entity type was not set for the query builder.");
-            }
+            if (MainEntityType == null) throw new InvalidOperationException("Main entity type was not set.");
 
             var queryBuilder = new StringBuilder();
-            int tableAliasCounter = 0;
+            mainTableAlias = $"e{tableAliasCounter}";
+            typeToAliasMap.Clear(); // Her build işleminde haritayı temizle
+            typeToAliasMap[MainEntityType] = mainTableAlias;
 
-            switch (queryType)
-            {
-                case QueryType.Select:
-                    BuildSelectQuery(this, queryBuilder, tableAliasCounter);
-                    break;
-                default:
-                    throw new InvalidOperationException("Unsupported query type.");
-            }
+            BuildSelectQuery(this, queryBuilder);
+
             return queryBuilder.ToString();
         }
 
+        #region Builder Methods
         public SQLQueryBuilder<T> Take(long take) { this.TakeCount = take; return this; }
         public SQLQueryBuilder<T> Skip(long skip) { this.SkipCount = skip; return this; }
         public SQLQueryBuilder<T> GroupBy(Expression<Func<T, object>> groupBy) { this.GroupByExpression = groupBy; return this; }
-        public SQLQueryBuilder<T> OrderByAscending(Expression<Func<T, object>> ascending) { this.OrderByExpression = ascending; this.Asc = true; return this; }
-        public SQLQueryBuilder<T> OrderByDescending(Expression<Func<T, object>> descending) { this.OrderByExpression = descending; this.Asc = false; return this; }
-        public SQLQueryBuilder<T> Page([Range(0, long.MaxValue)] long pageIndex, [Range(1, long.MaxValue)] long pageCount) { this.Take(pageCount); this.Skip(pageCount * pageIndex); return this; }
-
-        internal SQLQueryBuilder<T> SetQueryType(QueryType queryType)
-        {
-            this.queryType = queryType;
-            return this;
-        }
-
+        public SQLQueryBuilder<T> OrderByAscending(Expression<Func<T, object>> ascending) { this.OrderByClauses.Add((ascending, true)); return this; }
+        public SQLQueryBuilder<T> OrderByDescending(Expression<Func<T, object>> descending) { this.OrderByClauses.Add((descending, false)); return this; }
+        public SQLQueryBuilder<T> Page(long pageIndex, long pageCount) { this.Take(pageCount); this.Skip(pageCount * pageIndex); return this; }
+        internal SQLQueryBuilder<T> SetQueryType(QueryType qt) { this.queryType = qt; return this; }
         internal SQLQueryBuilder<T> SetTableName()
         {
-            Type type = typeof(T);
-            SQBTableAttribute? tableAttribute = type.GetCustomAttribute<SQBTableAttribute>();
-            var tableName = tableAttribute != null ? tableAttribute.TableName : type.Name;
-            this.TableName = tableName;
+            var type = typeof(T);
+            var tableAttr = type.GetCustomAttribute<SQBTableAttribute>();
+            this.TableName = tableAttr?.TableName ?? type.Name;
             return this;
         }
+        #endregion
 
-        internal SQLQueryBuilder<T> SetProperties()
+        private static void BuildSelectQuery(SQLQueryBuilder<T> builder, StringBuilder stringBuilder)
         {
-            Type type = typeof(T);
-            List<PropertyInfo> properties = type.GetProperties().ToList();
-            foreach (var property in properties)
-            {
-                string propertyName = property.GetCustomAttribute<SQBPropertyAttribute>()?.SqlFieldName ?? property.Name;
-                Type propertyType = property.PropertyType;
-                SQBProperty sqbProperty = new SQBProperty
-                {
-                    Name = propertyName,
-                    Type = this.sqlImplementation().GetSqlType(propertyType)
-                };
-                this.SQBProperties.Add(sqbProperty);
-            }
-            return this;
-        }
-
-        private static string GetMemberName(Expression expression)
-        {
-            if (expression is UnaryExpression unaryExpression)
-            {
-                expression = unaryExpression.Operand;
-            }
-
-            if (expression is MemberExpression memberExpression)
-            {
-                return memberExpression.Member.Name;
-            }
-
-            throw new ArgumentException("Expression is not a member access", nameof(expression));
-        }
-
-        internal static void BuildSelectQuery(SQLQueryBuilder<T> builder, StringBuilder stringBuilder, int tableAliasCounter)
-        {
-            string mainTableAlias = $"e{tableAliasCounter}";
             var columnsBuilder = new StringBuilder();
 
-            builder.ColumnAndAlias.AddRange(AppendColumnsWithAlias(columnsBuilder, builder.MainEntityType, mainTableAlias));
-            string joinClause = BuildJoinClause(builder, ref tableAliasCounter, mainTableAlias, columnsBuilder);
+            builder.ColumnAndAlias.AddRange(AppendColumnsWithAlias(columnsBuilder, builder.MainEntityType, builder.mainTableAlias));
 
-            var selectTemplate = builder.sqlImplementation().SelectQueryTemplate();
-            stringBuilder.AppendFormat(selectTemplate, columnsBuilder.ToString(), $"[{builder.TableName}] AS [{mainTableAlias}]");
+            string joinClause = BuildJoinClause(builder, columnsBuilder);
+
+            stringBuilder.Append("SELECT");
+            stringBuilder.Append(Environment.NewLine);
+            stringBuilder.Append($"    {columnsBuilder}");
+            stringBuilder.Append(Environment.NewLine);
+            stringBuilder.Append($"FROM [{builder.TableName}] AS [{builder.mainTableAlias}]");
             stringBuilder.Append(joinClause);
 
-            if (builder.WhereCondition != null && (builder.WhereCondition.IsGroup || !string.IsNullOrEmpty(builder.WhereCondition.ColumnName)))
+            if (builder.WhereExpressions.Any())
             {
-                string conditions = BuildWhereClauseRecursive(builder.WhereCondition, mainTableAlias);
-                var whereTemplate = builder.sqlImplementation().WhereClauseTemplate();
-                stringBuilder.Append(" ");
-                stringBuilder.AppendFormat(whereTemplate, conditions);
+                var whereConditions = builder.WhereExpressions.Select(expr => ExpressionParser.Parse(builder, expr)).ToList();
+                var combinedCondition = whereConditions.Count == 1
+                    ? whereConditions.First()
+                    : new SQBSqlWhere { Operator = LogicalOperator.AND, NestedConditions = whereConditions };
+
+                string conditions = BuildWhereClauseRecursive(combinedCondition, true);
+                if (!string.IsNullOrEmpty(conditions))
+                {
+                    stringBuilder.Append(Environment.NewLine);
+                    stringBuilder.Append($"WHERE {conditions}");
+                }
             }
 
             if (builder.GroupByExpression != null)
             {
-                string groupByColumnName = GetMemberName(builder.GroupByExpression.Body);
-                var groupByTemplate = builder.sqlImplementation().GroupByClauseTemplate();
-                stringBuilder.Append(" ");
-                stringBuilder.AppendFormat(groupByTemplate, $"[{mainTableAlias}].[{groupByColumnName}]");
+                var body = builder.GroupByExpression.Body;
+                var parsedMembers = ExpressionParser.ParseMembers(builder, body);
+                var groupByColumns = parsedMembers.Select(m => $"[{m.TableAlias}].[{m.ColumnName}]");
+                stringBuilder.Append(Environment.NewLine);
+                stringBuilder.Append($"GROUP BY {string.Join(", ", groupByColumns)}");
             }
 
-            if (builder.OrderByExpression != null)
+            if (builder.OrderByClauses.Any())
             {
-                string propertyName = GetMemberName(builder.OrderByExpression.Body);
-                string orderByDirection = builder.Asc.HasValue && builder.Asc.Value ? "ASC" : "DESC";
-                var orderByTemplate = builder.sqlImplementation().OrderByClauseTemplate();
-                stringBuilder.Append(" ");
-                stringBuilder.AppendFormat(orderByTemplate, $"[{mainTableAlias}].[{propertyName}] {orderByDirection}");
+                var orderByParts = new List<string>();
+                foreach (var (expression, ascending) in builder.OrderByClauses)
+                {
+                    var parsedMembers = ExpressionParser.ParseMembers(builder, expression.Body);
+                    string dir = ascending ? "ASC" : "DESC";
+                    orderByParts.AddRange(parsedMembers.Select(m => $"[{m.TableAlias}].[{m.ColumnName}] {dir}"));
+                }
+                if (orderByParts.Any())
+                {
+                    stringBuilder.Append(Environment.NewLine);
+                    stringBuilder.Append($"ORDER BY {string.Join(", ", orderByParts)}");
+                }
             }
 
             if (builder.SkipCount.HasValue || builder.TakeCount.HasValue)
             {
-                if (builder.OrderByExpression == null)
-                {
-                    throw new InvalidOperationException("SKIP or TAKE requires an ORDER BY clause.");
-                }
-
-                stringBuilder.Append($" OFFSET {builder.SkipCount ?? 0} ROWS");
+                if (!builder.OrderByClauses.Any()) throw new InvalidOperationException("SKIP or TAKE requires an ORDER BY clause.");
+                stringBuilder.Append(Environment.NewLine);
+                stringBuilder.Append($"OFFSET {builder.SkipCount ?? 0} ROWS");
                 if (builder.TakeCount.HasValue)
                 {
                     stringBuilder.Append($" FETCH NEXT {builder.TakeCount.Value} ROWS ONLY");
                 }
             }
-
             stringBuilder.Append(";");
         }
 
-        private static string BuildWhereClauseRecursive(SQBSqlWhere condition, string tableAlias)
+        private static string BuildWhereClauseRecursive(SQBSqlWhere condition, bool isTopLevel = false)
         {
+            if (condition == null) return string.Empty;
+
             if (!condition.IsGroup)
             {
-                string aliasedColumn = $"[{tableAlias}].[{condition.ColumnName}]";
-                string fieldPart = string.Format(condition.FunctionTemplate, aliasedColumn);
-                return $"{fieldPart} {condition.Operation} {condition.Value}";
+                return $"[{condition.TableAlias}].[{condition.ColumnName}] {condition.Operation} {condition.Value}";
             }
             else
             {
-                var clauses = condition.NestedConditions.Select(c => BuildWhereClauseRecursive(c, tableAlias));
-                return $"({string.Join($" {condition.Operator} ", clauses)})";
+                var clauses = condition.NestedConditions.Select(c => BuildWhereClauseRecursive(c, false)).Where(s => !string.IsNullOrEmpty(s));
+                if (!clauses.Any()) return string.Empty;
+
+                var joined = string.Join($" {condition.Operator} ", clauses);
+                if (isTopLevel && clauses.Count() == 1)
+                {
+                    return joined;
+                }
+                return $"({joined})";
             }
         }
 
-        internal static string BuildJoinClause(SQLQueryBuilder<T> builder, ref int tableAliasCounter, string mainTableAlias, StringBuilder columnsBuilder)
+        private static string BuildJoinClause(SQLQueryBuilder<T> builder, StringBuilder columnsBuilder)
         {
             var joinsBuilder = new StringBuilder();
-            var aliasToTypeMap = new Dictionary<string, Type> { { mainTableAlias, builder.MainEntityType } };
-            var nameToAliasMap = new Dictionary<string, string> { { builder.TableName, mainTableAlias } };
+            var localTypeToAliasMap = new Dictionary<Type, string>(builder.typeToAliasMap);
 
-            if (builder.includes != null && builder.includes.Any())
+            foreach (var include in builder.includes)
             {
-                foreach (var include in builder.includes)
+                builder.tableAliasCounter++;
+                string joinedTableAlias = $"e{builder.tableAliasCounter}";
+
+                if (!localTypeToAliasMap.TryGetValue(include.TypeFrom, out var fromTableAlias))
                 {
-                    tableAliasCounter++;
-                    string joinedTableAlias = $"e{tableAliasCounter}";
-
-                    if (!nameToAliasMap.TryGetValue(include.TableFrom, out var fromTableAlias))
-                    {
-                        throw new InvalidOperationException($"Cannot join from table '{include.TableFrom}' as it has not been included in the query. Ensure your Include/ThenInclude calls are in the correct order.");
-                    }
-                    var fromType = aliasToTypeMap[fromTableAlias];
-
-                    var foreignKeyProp = fromType.GetProperty(include.FieldName);
-                    if (foreignKeyProp == null)
-                    {
-                        throw new InvalidOperationException($"Property '{include.FieldName}' not found on type '{fromType.Name}'.");
-                    }
-
-                    var foreignKeyAttr = GetForeignKeyAttr(foreignKeyProp);
-                    if (foreignKeyAttr == null)
-                    {
-                        throw new InvalidOperationException($"Property '{include.FieldName}' on type '{fromType.Name}' does not have an SQBForeignKey attribute.");
-                    }
-
-                    var joinedType = GetJoinedType(foreignKeyAttr);
-
-                    builder.ColumnAndAlias.AddRange(AppendColumnsWithAlias(columnsBuilder, joinedType, joinedTableAlias));
-
-                    var joinedTableAttr = GetJoinedTableAttr(joinedType);
-                    var joinedTableName = GetJoinedTableName(joinedType, joinedTableAttr);
-                    var joinedPrimaryKey = joinedType.GetProperties().FirstOrDefault(p => p.GetCustomAttribute<SQBPrimaryKeyAttribute>() != null)?.Name ?? "Id";
-
-                    var fkColumnAttr = foreignKeyProp.GetCustomAttribute<SQBPropertyAttribute>();
-                    var fkColumnName = fkColumnAttr?.SqlFieldName ?? foreignKeyProp.Name;
-
-                    joinsBuilder.Append(GetLeftJoinSql(joinedTableName, joinedTableAlias, fromTableAlias, fkColumnName, joinedPrimaryKey));
-
-                    aliasToTypeMap.Add(joinedTableAlias, joinedType);
-                    nameToAliasMap[joinedTableName] = joinedTableAlias;
+                    throw new InvalidOperationException($"Cannot join from type '{include.TypeFrom.Name}'. Ensure it was included before.");
                 }
-            }
 
+                var fkPropInfo = include.TypeFrom.GetProperty(include.FieldName);
+                if (fkPropInfo == null)
+                {
+                    throw new InvalidOperationException($"Property '{include.FieldName}' not found on type '{include.TypeFrom.Name}'.");
+                }
+
+                var fkAttr = GetForeignKeyAttr(fkPropInfo);
+                if (fkAttr == null)
+                {
+                    throw new InvalidOperationException($"Property '{include.FieldName}' on '{include.TypeFrom.Name}' does not have an SQBForeignKey attribute.");
+                }
+
+                var joinedType = GetJoinedType(fkAttr);
+
+                // ThenInclude'de aynı tip tekrar join'lenebileceği için bu haritayı kullanmıyoruz.
+                // builder.typeToAliasMap[joinedType] = joinedTableAlias; 
+                localTypeToAliasMap[joinedType] = joinedTableAlias;
+
+                builder.ColumnAndAlias.AddRange(AppendColumnsWithAlias(columnsBuilder, joinedType, joinedTableAlias));
+
+                var joinedTableAttr = joinedType.GetCustomAttribute<SQBTableAttribute>();
+                var joinedTableName = joinedTableAttr?.TableName ?? joinedType.Name;
+                var joinedPk = joinedType.GetProperties().FirstOrDefault(p => p.GetCustomAttribute<SQBPrimaryKeyAttribute>() != null)?.Name ?? "Id";
+
+                joinsBuilder.Append(Environment.NewLine);
+                joinsBuilder.Append($"LEFT JOIN [{joinedTableName}] AS [{joinedTableAlias}] ON [{fromTableAlias}].[{fkPropInfo.Name}] = [{joinedTableAlias}].[{joinedPk}]");
+            }
             return joinsBuilder.ToString();
         }
 
-        internal static List<(string, string)> AppendColumnsWithAlias(StringBuilder columnsBuilder, Type entityType, string tableAlias)
+        private static List<(string, string)> AppendColumnsWithAlias(StringBuilder columnsBuilder, Type entityType, string tableAlias)
         {
-            var currentAliases = new List<(string, string)>();
-            var properties = entityType.GetProperties();
+            var aliases = new List<(string, string)>();
+            var properties = entityType.GetProperties()
+                .Where(p => p.PropertyType.IsPrimitive || p.PropertyType.IsValueType || p.PropertyType == typeof(string));
+
             foreach (var prop in properties)
             {
-                var columnAttr = prop.GetCustomAttribute<SQBPropertyAttribute>();
-                var columnName = columnAttr?.SqlFieldName ?? prop.Name;
-                var aliasName = $"{tableAlias}_{prop.Name}";
-
                 if (columnsBuilder.Length > 0)
                 {
                     columnsBuilder.Append(", ");
+                    if (columnsBuilder.Length % 120 == 0) // Satır uzunluğuna göre alt satıra geç
+                    {
+                        columnsBuilder.Append(Environment.NewLine);
+                        columnsBuilder.Append("    ");
+                    }
                 }
-                columnsBuilder.Append($"[{tableAlias}].[{columnName}] AS [{aliasName}]");
-                currentAliases.Add((prop.Name, aliasName));
+                var aliasName = $"{tableAlias}_{prop.Name}";
+                columnsBuilder.Append($"[{tableAlias}].[{prop.Name}] AS [{aliasName}]");
+                aliases.Add((prop.Name, aliasName));
             }
-            return currentAliases;
+            return aliases;
         }
 
-        internal static string GetLeftJoinSql(string joinedTableName, string joinedTableAlias, string mainTableAlias, string fkColumnName, string joinedPrimaryKey)
-        {
-            return $" LEFT JOIN [{joinedTableName}] AS [{joinedTableAlias}] ON [{mainTableAlias}].[{fkColumnName}] = [{joinedTableAlias}].[{joinedPrimaryKey!}]";
-        }
-
-        internal static string GetJoinedTableName(Type joinedType, SQBTableAttribute? joinedTableAttr)
-        {
-            return joinedTableAttr?.TableName ?? joinedType.Name;
-        }
-
-        internal static SQBTableAttribute? GetJoinedTableAttr(Type joinedType)
-        {
-            return (SQBTableAttribute)Attribute.GetCustomAttribute(joinedType, typeof(SQBTableAttribute));
-        }
-
-        internal static Type GetJoinedType(object foreignKeyAttr)
-        {
-            return foreignKeyAttr.GetType().GetGenericArguments()[0];
-        }
-
-        internal static object? GetForeignKeyAttr(PropertyInfo foreignKeyProp)
-        {
-            return foreignKeyProp.GetCustomAttributes(false)
-                .FirstOrDefault(attr => attr.GetType().IsGenericType && attr.GetType().GetGenericTypeDefinition() == typeof(SQBForeignKeyAttribute<>));
-        }
+        private static object GetForeignKeyAttr(PropertyInfo prop) => prop.GetCustomAttributes(false).FirstOrDefault(attr => attr.GetType().IsGenericType && attr.GetType().GetGenericTypeDefinition() == typeof(SQBForeignKeyAttribute<>));
+        private static Type GetJoinedType(object attr) => attr.GetType().GetGenericArguments()[0];
     }
 }
