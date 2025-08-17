@@ -39,6 +39,39 @@ namespace SQLQueryBuilder.Core
             return builder;
         }
 
+        /// <summary>
+        /// JOIN'lanmış bir tablo üzerinden artan sıralama yapar.
+        /// </summary>
+        public static SQLQueryBuilder<T> IncludeOrderByAscending<T, V>(this SQLQueryBuilder<T> builder, Expression<Func<V, object>> keySelector)
+            where T : class, new() where V : class, new()
+        {
+            builder.OrderByClauses.Add((keySelector, true));
+            return builder;
+        }
+
+        /// <summary>
+        /// JOIN'lanmış bir tablo üzerinden azalan sıralama yapar.
+        /// </summary>
+        public static SQLQueryBuilder<T> IncludeOrderByDescending<T, V>(this SQLQueryBuilder<T> builder, Expression<Func<V, object>> keySelector)
+            where T : class, new() where V : class, new()
+        {
+            builder.OrderByClauses.Add((keySelector, false));
+            return builder;
+        }
+
+        /// <summary>
+        /// JOIN'lanmış bir tablo üzerinden WHERE koşulu ekler.
+        /// </summary>
+        public static SQLQueryBuilder<T> IncludeWhere<T, V>(this SQLQueryBuilder<T> builder, Expression<Func<V, bool>> whereExpression)
+            where T : class, new() where V : class, new()
+        {
+            if (whereExpression != null)
+            {
+                builder.WhereExpressions.Add(whereExpression.Body);
+            }
+            return builder;
+        }
+
         public static SQLQueryBuilder<T> ConstructBuilder<T>(Expression<Func<T, bool>>? expression = null)
             where T : class, new()
         {

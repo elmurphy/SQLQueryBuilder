@@ -48,7 +48,7 @@ namespace SQLQueryBuilder.Core
 
             var queryBuilder = new StringBuilder();
             mainTableAlias = $"e{tableAliasCounter}";
-            typeToAliasMap.Clear(); // Her build işleminde haritayı temizle
+            typeToAliasMap.Clear();
             typeToAliasMap[MainEntityType] = mainTableAlias;
 
             BuildSelectQuery(this, queryBuilder);
@@ -62,6 +62,8 @@ namespace SQLQueryBuilder.Core
         public SQLQueryBuilder<T> GroupBy(Expression<Func<T, object>> groupBy) { this.GroupByExpression = groupBy; return this; }
         public SQLQueryBuilder<T> OrderByAscending(Expression<Func<T, object>> ascending) { this.OrderByClauses.Add((ascending, true)); return this; }
         public SQLQueryBuilder<T> OrderByDescending(Expression<Func<T, object>> descending) { this.OrderByClauses.Add((descending, false)); return this; }
+        public SQLQueryBuilder<T> ThenBy(Expression<Func<T, object>> thenBy) { this.OrderByClauses.Add((thenBy, true)); return this; }
+        public SQLQueryBuilder<T> ThenByDescending(Expression<Func<T, object>> thenByDescending) { this.OrderByClauses.Add((thenByDescending, false)); return this; }
         public SQLQueryBuilder<T> Page(long pageIndex, long pageCount) { this.Take(pageCount); this.Skip(pageCount * pageIndex); return this; }
         internal SQLQueryBuilder<T> SetQueryType(QueryType qt) { this.queryType = qt; return this; }
         internal SQLQueryBuilder<T> SetTableName()
@@ -77,8 +79,10 @@ namespace SQLQueryBuilder.Core
         {
             var columnsBuilder = new StringBuilder();
 
+            // First add main table columns
             builder.ColumnAndAlias.AddRange(AppendColumnsWithAlias(columnsBuilder, builder.MainEntityType, builder.mainTableAlias));
 
+            // Then build join clause and add joined table columns
             string joinClause = BuildJoinClause(builder, columnsBuilder);
 
             stringBuilder.Append("SELECT");
@@ -166,35 +170,29 @@ namespace SQLQueryBuilder.Core
         private static string BuildJoinClause(SQLQueryBuilder<T> builder, StringBuilder columnsBuilder)
         {
             var joinsBuilder = new StringBuilder();
-            var localTypeToAliasMap = new Dictionary<Type, string>(builder.typeToAliasMap);
 
             foreach (var include in builder.includes)
             {
                 builder.tableAliasCounter++;
                 string joinedTableAlias = $"e{builder.tableAliasCounter}";
 
-                if (!localTypeToAliasMap.TryGetValue(include.TypeFrom, out var fromTableAlias))
+                if (!builder.typeToAliasMap.TryGetValue(include.TypeFrom, out var fromTableAlias))
                 {
                     throw new InvalidOperationException($"Cannot join from type '{include.TypeFrom.Name}'. Ensure it was included before.");
                 }
 
                 var fkPropInfo = include.TypeFrom.GetProperty(include.FieldName);
-                if (fkPropInfo == null)
-                {
-                    throw new InvalidOperationException($"Property '{include.FieldName}' not found on type '{include.TypeFrom.Name}'.");
-                }
-
                 var fkAttr = GetForeignKeyAttr(fkPropInfo);
-                if (fkAttr == null)
-                {
-                    throw new InvalidOperationException($"Property '{include.FieldName}' on '{include.TypeFrom.Name}' does not have an SQBForeignKey attribute.");
-                }
-
                 var joinedType = GetJoinedType(fkAttr);
 
-                // ThenInclude'de aynı tip tekrar join'lenebileceği için bu haritayı kullanmıyoruz.
-                // builder.typeToAliasMap[joinedType] = joinedTableAlias; 
-                localTypeToAliasMap[joinedType] = joinedTableAlias;
+                if (!builder.typeToAliasMap.ContainsKey(joinedType))
+                {
+                    builder.typeToAliasMap[joinedType] = joinedTableAlias;
+                }
+                else // ThenInclude ile aynı tip tekrar join'leniyorsa, yeni alias'ı ata
+                {
+                    builder.typeToAliasMap[joinedType] = joinedTableAlias;
+                }
 
                 builder.ColumnAndAlias.AddRange(AppendColumnsWithAlias(columnsBuilder, joinedType, joinedTableAlias));
 
@@ -219,11 +217,6 @@ namespace SQLQueryBuilder.Core
                 if (columnsBuilder.Length > 0)
                 {
                     columnsBuilder.Append(", ");
-                    if (columnsBuilder.Length % 120 == 0) // Satır uzunluğuna göre alt satıra geç
-                    {
-                        columnsBuilder.Append(Environment.NewLine);
-                        columnsBuilder.Append("    ");
-                    }
                 }
                 var aliasName = $"{tableAlias}_{prop.Name}";
                 columnsBuilder.Append($"[{tableAlias}].[{prop.Name}] AS [{aliasName}]");
@@ -233,6 +226,11 @@ namespace SQLQueryBuilder.Core
         }
 
         private static object GetForeignKeyAttr(PropertyInfo prop) => prop.GetCustomAttributes(false).FirstOrDefault(attr => attr.GetType().IsGenericType && attr.GetType().GetGenericTypeDefinition() == typeof(SQBForeignKeyAttribute<>));
-        private static Type GetJoinedType(object attr) => attr.GetType().GetGenericArguments()[0];
+        private static Type GetJoinedType(object attr)
+        {
+            if (attr == null)
+                throw new InvalidOperationException($"Property must have SQBForeignKeyAttribute to be used in joins.");
+            return attr.GetType().GetGenericArguments()[0];
+        }
     }
 }
